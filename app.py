@@ -184,7 +184,7 @@ with st.sidebar:
 st.markdown("""
 <h1 style='font-family:Syne,sans-serif; font-size:2rem; font-weight:700;
            color:#e6edf3; margin-bottom:0;'>
-    Pronóstico Precio de Bolsa &nbsp;·&nbsp; Colombia
+    Pronóstico Precio de Energía en Bolsa &nbsp;·&nbsp; Colombia
 </h1>
 <p style='color:#7d8590; font-size:14px; margin-top:4px;'>
     Pronóstico basado en Prophet · Variables: hidrología, demanda, ENSO
