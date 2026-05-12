@@ -337,9 +337,18 @@ with tab1:
     fig.add_hline(y=umbral_bajo, line=dict(color=COLORS["green"], width=1, dash="dot"),
                   annotation_text=f"Alerta baja · ${umbral_bajo:.0f}", annotation_font_color=COLORS["green"])
 
-    # Línea de corte "hoy"
-    fig.add_vline(x=corte.isoformat(), line=dict(color="#ffffff", width=1, dash="dash"),
-                  annotation_text="Hoy", annotation_font_color="#ffffff")
+    # Línea de corte "hoy" (compatible con todas las versiones de Plotly)
+    fig.add_trace(go.Scatter(
+        x=[corte, corte],
+        y=[dp["y"].min() * 0.9, dp["y"].max() * 1.1],
+        mode="lines+text",
+        line=dict(color="#ffffff", width=1, dash="dash"),
+        text=["", "Hoy"],
+        textposition="top center",
+        textfont=dict(color="#ffffff", size=11),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
 
     fig.update_layout(
         paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
