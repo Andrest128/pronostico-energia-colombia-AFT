@@ -287,9 +287,10 @@ with tab1:
         format_func=lambda x: f"{x//365}a" if x >= 365 else f"{x}d",
     )
 
-    mask_hist = dp["ds"] >= (corte - pd.Timedelta(days=dias_hist))
+    corte_hist = corte - pd.Timedelta(days=int(dias_hist))
+    mask_hist = dp["ds"] >= corte_hist
     dh = dp[mask_hist]
-    fh = hist_fc[hist_fc["ds"] >= (corte - pd.Timedelta(days=dias_hist))]
+    fh = hist_fc[hist_fc["ds"] >= corte_hist]
 
     fig = go.Figure()
 
@@ -337,7 +338,7 @@ with tab1:
                   annotation_text=f"Alerta baja · ${umbral_bajo:.0f}", annotation_font_color=COLORS["green"])
 
     # Línea de corte "hoy"
-    fig.add_vline(x=corte, line=dict(color="#ffffff", width=1, dash="dash"),
+    fig.add_vline(x=corte.isoformat(), line=dict(color="#ffffff", width=1, dash="dash"),
                   annotation_text="Hoy", annotation_font_color="#ffffff")
 
     fig.update_layout(
@@ -377,8 +378,9 @@ with tab2:
         )
         return f
 
-    mask_full = dp["ds"] >= (corte - pd.Timedelta(days=730))
-    df_full = df[df["fecha"] >= (corte - pd.Timedelta(days=730))]
+    corte_730 = corte - pd.Timedelta(days=730)
+    mask_full = dp["ds"] >= corte_730
+    df_full = df[df["fecha"] >= corte_730]
 
     with col_a:
         st.plotly_chart(
