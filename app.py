@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Pronóstico Precio de Bolsa · Colombia",
+    page_title="Pronóstico Precio de Energía en Bolsa · Colombia",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
