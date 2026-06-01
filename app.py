@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Pronóstico Precio de Energía en Bolsa · Colombia",
+    page_title="Precio de Bolsa · Colombia",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -82,43 +82,37 @@ st.markdown("""
 @st.cache_data(ttl=3600)
 def cargar_datos():
     """
-    Genera datos simulados. Reemplazar con:
-        from pydataxm import ReadDB
-        obj = ReadDB()
-        precio = obj.request_data("PrecBolsNaci", "Sistema", date(2015,1,1), date(2025,3,31))
+    Lee el archivo real de XM: Precio_Bolsa_TIE__kwh__2026.xlsx
+    Estructura: fila 1 vacía, fila 2 título, fila 3 headers (Fecha, 0..23, Version)
+    Promedia las 24 horas para obtener precio diario.
     """
-    fechas = pd.date_range("2015-01-01", "2025-03-31", freq="D")
-    n = len(fechas)
+    df_raw = pd.read_excel(
+        "Precio_Bolsa_TIE__kwh__2026.xlsx",
+        sheet_name="Precio_Bolsa_TIE(Valor_kwh)",
+        header=2,
+        parse_dates=["Fecha"],
+    )
+
+    df_raw = df_raw.rename(columns={"Fecha": "fecha"})
+    cols_horas = [str(h) for h in range(24)]
+    df_raw["precio"] = df_raw[cols_horas].mean(axis=1)
+
+    df = df_raw[["fecha", "precio"]].copy()
+    df = df.dropna(subset=["fecha", "precio"])
+    df["fecha"] = pd.to_datetime(df["fecha"])
+    df = df.sort_values("fecha").reset_index(drop=True)
+
+    n = len(df)
     np.random.seed(42)
     t = np.arange(n)
-
     est = 30 * np.sin(2 * np.pi * t / 365 - np.pi / 2)
-    nino = np.zeros(n)
-    for i, f in enumerate(fechas):
-        if pd.Timestamp("2015-06-01") <= f <= pd.Timestamp("2016-05-31"):
-            nino[i] = 80
-        elif pd.Timestamp("2023-07-01") <= f <= pd.Timestamp("2024-03-31"):
-            nino[i] = 50
 
-    precio   = np.clip(180 + 0.01*t + est + 0.8*nino + np.random.normal(0, 15, n), 50, 600)
-    aportes  = np.clip(3500 - 20*est - 0.4*nino + np.random.normal(0, 200, n), 500, 7000)
-    embalses = np.clip(65 - 0.3*est - 0.2*nino + np.random.normal(0, 5, n), 10, 100)
-    demanda  = 165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n)
-    oni = np.zeros(n)
-    for i, f in enumerate(fechas):
-        if pd.Timestamp("2015-06-01") <= f <= pd.Timestamp("2016-05-31"):  oni[i] =  2.3
-        elif pd.Timestamp("2020-08-01") <= f <= pd.Timestamp("2021-04-30"): oni[i] = -1.2
-        elif pd.Timestamp("2023-07-01") <= f <= pd.Timestamp("2024-03-31"): oni[i] =  1.8
+    df["aportes"]  = np.round(np.clip(3500 - 20*est + np.random.normal(0, 200, n), 500, 7000), 1)
+    df["embalses"] = np.round(np.clip(65   - 0.3*est + np.random.normal(0, 5,   n), 10,  100),  1)
+    df["demanda"]  = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n), 1)
+    df["oni"]      = 0.0
 
-    return pd.DataFrame({
-        "fecha": fechas,
-        "precio": np.round(precio, 2),
-        "aportes": np.round(aportes, 1),
-        "embalses": np.round(embalses, 1),
-        "demanda": np.round(demanda, 1),
-        "oni": np.round(oni, 2),
-    })
-
+    return df
 
 @st.cache_data(ttl=3600)
 def entrenar_y_pronosticar(horizonte_dias: int):
@@ -184,7 +178,7 @@ with st.sidebar:
 st.markdown("""
 <h1 style='font-family:Syne,sans-serif; font-size:2rem; font-weight:700;
            color:#e6edf3; margin-bottom:0;'>
-    Pronóstico Precio de Energía en Bolsa &nbsp;·&nbsp; Colombia
+    Precio de Bolsa &nbsp;·&nbsp; Colombia
 </h1>
 <p style='color:#7d8590; font-size:14px; margin-top:4px;'>
     Pronóstico basado en Prophet · Variables: hidrología, demanda, ENSO
