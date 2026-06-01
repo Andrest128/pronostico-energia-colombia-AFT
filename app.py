@@ -404,24 +404,13 @@ with tab2:
                        "ds", "embalses", "#3fb950", "Nivel embalses", "%"),
             use_container_width=True
         )
-        # ONI con colores positivo/negativo
-        df_oni = df_full.rename(columns={"fecha":"ds"})
-        fig_oni = go.Figure()
-        fig_oni.add_trace(go.Bar(
-            x=df_oni["ds"], y=df_oni["oni"],
-            marker_color=["#f85149" if v > 0 else "#58a6ff" for v in df_oni["oni"]],
-            name="ONI",
-        ))
-        fig_oni.update_layout(
-            title=dict(text="Índice ONI (ENSO)", font=dict(size=13, color=COLORS["text"])),
-            paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
-            font=dict(family="DM Sans", color=COLORS["text"]),
-            yaxis=dict(title="°C anomalía", gridcolor=COLORS["border"], zeroline=True,
-                       zerolinecolor=COLORS["border"]),
-            xaxis=dict(gridcolor=COLORS["border"]),
-            height=260, margin=dict(l=0, r=0, t=40, b=0), showlegend=False,
+        st.markdown(
+            '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+            'padding:20px;text-align:center;color:#7d8590;font-size:13px;">'
+            '📡 Índice ONI (ENSO)<br><span style="font-size:11px;">Se activará al conectar datos reales de NOAA</span>'
+            '</div>',
+            unsafe_allow_html=True
         )
-        st.plotly_chart(fig_oni, use_container_width=True)
 
 
 # ─────────────────────────────────────────────
