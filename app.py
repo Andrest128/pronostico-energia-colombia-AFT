@@ -14,17 +14,6 @@ import streamlit as st
 import plotly.graph_objects as go
 from prophet import Prophet
 from datetime import date
-# DESPUÉS
-def cargar_xm_variables(fecha_inicio, fecha_fin):
-    try:
-        from pydataxm import ReadDB
-        obj = ReadDB()
-    except ImportError:
-        try:
-            from pydataxm.pydataxm import ReadDB
-            obj = ReadDB()
-        except ImportError:
-            return {}, ["aportes", "embalses", "demanda"]
 
 warnings.filterwarnings("ignore")
 
@@ -107,20 +96,13 @@ def cargar_precio_excel():
 def cargar_xm_variables(fecha_inicio, fecha_fin):
     """
     Descarga aportes, embalses y demanda desde la API pública de XM.
+    No requiere credenciales.
+    Variables:
+      - AporEner    : Aportes energéticos hídricos (GWh/día)
+      - NivEmbBalse : Nivel de embalses (%)
+      - DemaSistNaci: Demanda nacional (GWh/día)
     """
-    try:
-        from pydataxm import ReadDB
-    except ImportError:
-        try:
-            from pydataxm.pydataxm import ReadDB
-        except ImportError:
-            return {}, ["aportes", "embalses", "demanda"]
-
-    try:
-        obj = ReadDB()
-    except Exception:
-        return {}, ["aportes", "embalses", "demanda"]
-
+    obj = ReadDB()
     resultados = {}
     variables = {
         "aportes":  ("AporEner",     "Sistema"),
@@ -410,7 +392,7 @@ with tab1:
     dias_hist = st.select_slider(
         "Histórico a mostrar",
         options=[90, 180, 365, 730, 1825],
-        value=min(365, len(dp)),
+        value=90 if len(dp) < 180 else (180 if len(dp) < 365 else 365),
         format_func=lambda x: f"{x//365}a" if x >= 365 else f"{x}d",
     )
     corte_hist = corte - pd.Timedelta(days=int(dias_hist))
