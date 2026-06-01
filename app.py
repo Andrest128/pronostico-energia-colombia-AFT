@@ -139,10 +139,11 @@ def entrenar_y_pronosticar(horizonte_dias: int):
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
-    for reg in ["aportes_norm", "embalses_norm", "demanda_norm"]:
-    #for col in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
+    for col in ["aportes_norm", "embalses_norm", "demanda_norm"]:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r, std_r = hist_rec.mean(), hist_rec.std() * 0.3
+        if std_r == 0:
+            std_r = 0.01
         proy = np.random.normal(mu_r, std_r, horizonte_dias)
         futuro[col] = np.concatenate([dp[col].values, proy])
 
