@@ -102,7 +102,19 @@ def cargar_xm_variables(fecha_inicio, fecha_fin):
       - NivEmbBalse : Nivel de embalses (%)
       - DemaSistNaci: Demanda nacional (GWh/día)
     """
-    obj = ReadDB()
+    try:
+        from pydataxm import ReadDB
+    except ImportError:
+        try:
+            from pydataxm.pydataxm import ReadDB
+        except ImportError:
+            return {}, ["aportes", "embalses", "demanda"]
+
+    try:
+        obj = ReadDB()
+    except Exception:
+        return {}, ["aportes", "embalses", "demanda"]
+
     resultados = {}
     variables = {
         "aportes":  ("AporEner",     "Sistema"),
