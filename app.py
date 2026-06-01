@@ -14,7 +14,17 @@ import streamlit as st
 import plotly.graph_objects as go
 from prophet import Prophet
 from datetime import date
-from pydataxm import ReadDB
+# DESPUÉS
+def cargar_xm_variables(fecha_inicio, fecha_fin):
+    try:
+        from pydataxm import ReadDB
+        obj = ReadDB()
+    except ImportError:
+        try:
+            from pydataxm.pydataxm import ReadDB
+            obj = ReadDB()
+        except ImportError:
+            return {}, ["aportes", "embalses", "demanda"]
 
 warnings.filterwarnings("ignore")
 
