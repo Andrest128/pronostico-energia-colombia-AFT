@@ -108,7 +108,7 @@ def cargar_datos():
     df["aportes"]  = np.round(np.clip(3500 - 20*est + np.random.normal(0, 200, n), 500, 7000), 1)
     df["embalses"] = np.round(np.clip(65   - 0.3*est + np.random.normal(0, 5,   n), 10,  100),  1)
     df["demanda"]  = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n), 1)
-    df["oni"]      = 0.0
+    #df["oni"]      = 0.0
 
     return df
 
@@ -117,7 +117,8 @@ def entrenar_y_pronosticar(horizonte_dias: int):
     df = cargar_datos()
 
     dp = df.rename(columns={"fecha": "ds", "precio": "y"}).copy()
-    for col in ["aportes", "embalses", "demanda", "oni"]:
+    for col in ["aportes", "embalses", "demanda"]:
+    #for col in ["aportes", "embalses", "demanda", "oni"]:
         mu, std = dp[col].mean(), dp[col].std()
         dp[f"{col}_norm"] = (dp[col] - mu) / std
 
@@ -130,14 +131,16 @@ def entrenar_y_pronosticar(horizonte_dias: int):
         seasonality_prior_scale=10.0,
         seasonality_mode="multiplicative",
     )
-    for reg in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
+    for reg in ["aportes_norm", "embalses_norm", "demanda_norm"]:
+    #for reg in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
         m.add_regressor(reg, prior_scale=0.5)
 
     m.fit(dp)
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
-    for col in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
+    for reg in ["aportes_norm", "embalses_norm", "demanda_norm"]:
+    #for col in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r, std_r = hist_rec.mean(), hist_rec.std() * 0.3
         proy = np.random.normal(mu_r, std_r, horizonte_dias)
