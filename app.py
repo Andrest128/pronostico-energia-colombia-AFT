@@ -161,10 +161,9 @@ def cargar_datos():
     df["aportes"]  = np.round(np.clip(3500 - 20*est + np.random.normal(0, 200, n), 500, 7000), 1)
     df["embalses"] = np.round(np.clip(65   - 0.3*est + np.random.normal(0, 5,   n), 10,  100),  1)
     df["demanda"]  = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n), 1)
-# Al final, antes del return, reemplaza df["oni"] = 0.0 por:
-oni_serie = cargar_oni()
-df["oni"] = df["fecha"].map(oni_serie)
-df["oni"] = df["oni"].fillna(0.0)  # días sin dato → neutro
+    oni_serie = cargar_oni()
+    df["oni"] = df["fecha"].map(oni_serie)
+    df["oni"] = df["oni"].fillna(0.0)  # días sin dato → neutro
     return df
 
 @st.cache_data(ttl=3600)
