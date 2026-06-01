@@ -81,13 +81,11 @@ st.markdown("""
 
 @st.cache_data(ttl=3600)
 def cargar_datos():
-    """
-    Lee el archivo real de XM: Precio_Bolsa_TIE__kwh__2026.xlsx
-    Estructura: fila 1 vacía, fila 2 título, fila 3 headers (Fecha, 0..23, Version)
-    Promedia las 24 horas para obtener precio diario.
-    """
+    import os
+    ruta = os.path.join(os.path.dirname(__file__), "PrecioBolsa2026.xlsx")
+    
     df_raw = pd.read_excel(
-        "PrecioBolsa2026.xlsx",
+        ruta,
         sheet_name="PrecioBolsa",
         header=2,
         parse_dates=["Fecha"],
