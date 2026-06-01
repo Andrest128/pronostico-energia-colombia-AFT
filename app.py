@@ -87,8 +87,8 @@ def cargar_datos():
     Promedia las 24 horas para obtener precio diario.
     """
     df_raw = pd.read_excel(
-        "Precio_Bolsa_TIE($kwh)_2026.xlsx",
-        sheet_name="Precio_Bolsa_TIE(Valor_kwh)",
+        "PrecioBolsa2026.xlsx",
+        sheet_name="PrecioBolsa",
         header=2,
         parse_dates=["Fecha"],
     )
