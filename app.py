@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Pronóstico Precio de Energía en Bolsa · Colombia",
+    page_title="Precio de Bolsa · Colombia",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -79,53 +79,100 @@ st.markdown("""
 # DATOS
 # ─────────────────────────────────────────────
 
+#Integrar Oni:
+@st.cache_data(ttl=86400)  # cache 24h (el ONI se actualiza mensualmente)
+def cargar_oni():
+    """
+    Descarga el índice ONI de la NOAA y lo convierte a serie diaria.
+    Fuente: https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt
+    """
+    import io
+    import requests
+
+    url = "https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+
+    # Parsear el texto
+    df_oni = pd.read_csv(
+        io.StringIO(resp.text),
+        sep=r"\s+",
+        skiprows=1,
+        names=["trimestre", "anio", "oni"]
+    )
+
+    # Mapa: trimestre → mes central
+    mes_central = {
+        "DJF": 1, "JFM": 2, "FMA": 3, "MAM": 4,
+        "AMJ": 5, "MJJ": 6, "JJA": 7, "JAS": 8,
+        "ASO": 9, "SON": 10, "OND": 11, "NDJ": 12,
+    }
+
+    df_oni["mes"] = df_oni["trimestre"].map(mes_central)
+    df_oni["fecha_mes"] = pd.to_datetime(
+        df_oni["anio"].astype(str) + "-" + df_oni["mes"].astype(str) + "-01"
+    )
+    df_oni = df_oni[["fecha_mes", "oni"]].dropna()
+
+    # Expandir a diario: cada valor mensual se aplica a todos los días del mes
+    fechas_diarias = pd.date_range(
+        df_oni["fecha_mes"].min(),
+        df_oni["fecha_mes"].max() + pd.offsets.MonthEnd(1),
+        freq="D"
+    )
+    df_diario = pd.DataFrame({"fecha": fechas_diarias})
+    df_oni["fecha"] = df_oni["fecha_mes"]
+    df_diario = df_diario.merge(
+        df_oni[["fecha", "oni"]],
+        on="fecha", how="left"
+    )
+    # Rellenar hacia adelante (un valor mensual cubre todos los días del mes)
+    df_diario["oni"] = df_diario["oni"].ffill()
+
+    return df_diario.set_index("fecha")["oni"]
 @st.cache_data(ttl=3600)
+
+# Cargar precios de bolsa:
 def cargar_datos():
-    """
-    Genera datos simulados. Reemplazar con:
-        from pydataxm import ReadDB
-        obj = ReadDB()
-        precio = obj.request_data("PrecBolsNaci", "Sistema", date(2015,1,1), date(2025,3,31))
-    """
-    fechas = pd.date_range("2015-01-01", "2025-03-31", freq="D")
-    n = len(fechas)
+    import os
+    ruta = os.path.join(os.path.dirname(__file__), "PrecioBolsa2026.xlsx")
+    
+    df_raw = pd.read_excel(
+        ruta,
+        sheet_name="PrecioBolsa",
+        header=2,
+        parse_dates=["Fecha"],
+    )
+
+    df_raw = df_raw.rename(columns={"Fecha": "fecha"})
+    cols_horas = [str(h) for h in range(24)]
+    df_raw["precio"] = df_raw[cols_horas].mean(axis=1)
+
+    df = df_raw[["fecha", "precio"]].copy()
+    df = df.dropna(subset=["fecha", "precio"])
+    df["fecha"] = pd.to_datetime(df["fecha"])
+    df = df.sort_values("fecha").reset_index(drop=True)
+
+    n = len(df)
     np.random.seed(42)
     t = np.arange(n)
-
     est = 30 * np.sin(2 * np.pi * t / 365 - np.pi / 2)
-    nino = np.zeros(n)
-    for i, f in enumerate(fechas):
-        if pd.Timestamp("2015-06-01") <= f <= pd.Timestamp("2016-05-31"):
-            nino[i] = 80
-        elif pd.Timestamp("2023-07-01") <= f <= pd.Timestamp("2024-03-31"):
-            nino[i] = 50
 
-    precio   = np.clip(180 + 0.01*t + est + 0.8*nino + np.random.normal(0, 15, n), 50, 600)
-    aportes  = np.clip(3500 - 20*est - 0.4*nino + np.random.normal(0, 200, n), 500, 7000)
-    embalses = np.clip(65 - 0.3*est - 0.2*nino + np.random.normal(0, 5, n), 10, 100)
-    demanda  = 165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n)
-    oni = np.zeros(n)
-    for i, f in enumerate(fechas):
-        if pd.Timestamp("2015-06-01") <= f <= pd.Timestamp("2016-05-31"):  oni[i] =  2.3
-        elif pd.Timestamp("2020-08-01") <= f <= pd.Timestamp("2021-04-30"): oni[i] = -1.2
-        elif pd.Timestamp("2023-07-01") <= f <= pd.Timestamp("2024-03-31"): oni[i] =  1.8
-
-    return pd.DataFrame({
-        "fecha": fechas,
-        "precio": np.round(precio, 2),
-        "aportes": np.round(aportes, 1),
-        "embalses": np.round(embalses, 1),
-        "demanda": np.round(demanda, 1),
-        "oni": np.round(oni, 2),
-    })
-
+    df["aportes"]  = np.round(np.clip(3500 - 20*est + np.random.normal(0, 200, n), 500, 7000), 1)
+    df["embalses"] = np.round(np.clip(65   - 0.3*est + np.random.normal(0, 5,   n), 10,  100),  1)
+    df["demanda"]  = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n), 1)
+    oni_serie = cargar_oni()
+    df["oni"] = df["fecha"].map(oni_serie)
+    df["oni"] = df["oni"].fillna(0.0)  # días sin dato → neutro
+    return df
 
 @st.cache_data(ttl=3600)
 def entrenar_y_pronosticar(horizonte_dias: int):
     df = cargar_datos()
 
     dp = df.rename(columns={"fecha": "ds", "precio": "y"}).copy()
-    for col in ["aportes", "embalses", "demanda", "oni"]:
+    for col in ["aportes", "embalses", "demanda"]:
+    #for col in ["aportes", "embalses", "demanda", "oni"]:
         mu, std = dp[col].mean(), dp[col].std()
         dp[f"{col}_norm"] = (dp[col] - mu) / std
 
@@ -138,16 +185,19 @@ def entrenar_y_pronosticar(horizonte_dias: int):
         seasonality_prior_scale=10.0,
         seasonality_mode="multiplicative",
     )
-    for reg in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
+    for reg in ["aportes_norm", "embalses_norm", "demanda_norm"]:
+    #for reg in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
         m.add_regressor(reg, prior_scale=0.5)
 
     m.fit(dp)
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
-    for col in ["aportes_norm", "embalses_norm", "demanda_norm", "oni_norm"]:
+    for col in ["aportes_norm", "embalses_norm", "demanda_norm"]:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r, std_r = hist_rec.mean(), hist_rec.std() * 0.3
+        if std_r == 0:
+            std_r = 0.01
         proy = np.random.normal(mu_r, std_r, horizonte_dias)
         futuro[col] = np.concatenate([dp[col].values, proy])
 
@@ -184,7 +234,7 @@ with st.sidebar:
 st.markdown("""
 <h1 style='font-family:Syne,sans-serif; font-size:2rem; font-weight:700;
            color:#e6edf3; margin-bottom:0;'>
-    Pronóstico Precio de Energía en Bolsa &nbsp;·&nbsp; Colombia
+    Precio de Bolsa &nbsp;·&nbsp; Colombia
 </h1>
 <p style='color:#7d8590; font-size:14px; margin-top:4px;'>
     Pronóstico basado en Prophet · Variables: hidrología, demanda, ENSO
@@ -408,24 +458,13 @@ with tab2:
                        "ds", "embalses", "#3fb950", "Nivel embalses", "%"),
             use_container_width=True
         )
-        # ONI con colores positivo/negativo
-        df_oni = df_full.rename(columns={"fecha":"ds"})
-        fig_oni = go.Figure()
-        fig_oni.add_trace(go.Bar(
-            x=df_oni["ds"], y=df_oni["oni"],
-            marker_color=["#f85149" if v > 0 else "#58a6ff" for v in df_oni["oni"]],
-            name="ONI",
-        ))
-        fig_oni.update_layout(
-            title=dict(text="Índice ONI (ENSO)", font=dict(size=13, color=COLORS["text"])),
-            paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
-            font=dict(family="DM Sans", color=COLORS["text"]),
-            yaxis=dict(title="°C anomalía", gridcolor=COLORS["border"], zeroline=True,
-                       zerolinecolor=COLORS["border"]),
-            xaxis=dict(gridcolor=COLORS["border"]),
-            height=260, margin=dict(l=0, r=0, t=40, b=0), showlegend=False,
+        st.markdown(
+            '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+            'padding:20px;text-align:center;color:#7d8590;font-size:13px;">'
+            '📡 Índice ONI (ENSO)<br><span style="font-size:11px;">Se activará al conectar datos reales de NOAA</span>'
+            '</div>',
+            unsafe_allow_html=True
         )
-        st.plotly_chart(fig_oni, use_container_width=True)
 
 
 # ─────────────────────────────────────────────
