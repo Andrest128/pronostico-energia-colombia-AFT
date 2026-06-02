@@ -79,58 +79,7 @@ st.markdown("""
 # DATOS
 # ─────────────────────────────────────────────
 
-#Integrar Oni:
-@st.cache_data(ttl=86400)  # cache 24h (el ONI se actualiza mensualmente)
-def cargar_oni():
-    """
-    Descarga el índice ONI de la NOAA y lo convierte a serie diaria.
-    Fuente: https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt
-    """
-    import io
-    import requests
 
-    url = "https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-
-    # Parsear el texto
-    df_oni = pd.read_csv(
-        io.StringIO(resp.text),
-        sep=r"\s+",
-        skiprows=1,
-        names=["trimestre", "anio", "oni"]
-    )
-
-    # Mapa: trimestre → mes central
-    mes_central = {
-        "DJF": 1, "JFM": 2, "FMA": 3, "MAM": 4,
-        "AMJ": 5, "MJJ": 6, "JJA": 7, "JAS": 8,
-        "ASO": 9, "SON": 10, "OND": 11, "NDJ": 12,
-    }
-
-    df_oni["mes"] = df_oni["trimestre"].map(mes_central)
-    df_oni["fecha_mes"] = pd.to_datetime(
-        df_oni["anio"].astype(str) + "-" + df_oni["mes"].astype(str) + "-01"
-    )
-    df_oni = df_oni[["fecha_mes", "oni"]].dropna()
-
-    # Expandir a diario: cada valor mensual se aplica a todos los días del mes
-    fechas_diarias = pd.date_range(
-        df_oni["fecha_mes"].min(),
-        df_oni["fecha_mes"].max() + pd.offsets.MonthEnd(1),
-        freq="D"
-    )
-    df_diario = pd.DataFrame({"fecha": fechas_diarias})
-    df_oni["fecha"] = df_oni["fecha_mes"]
-    df_diario = df_diario.merge(
-        df_oni[["fecha", "oni"]],
-        on="fecha", how="left"
-    )
-    # Rellenar hacia adelante (un valor mensual cubre todos los días del mes)
-    df_diario["oni"] = df_diario["oni"].ffill()
-
-    return df_diario.set_index("fecha")["oni"]
-@st.cache_data(ttl=3600)
 
 # Cargar precios de bolsa:
 def cargar_datos():
@@ -161,9 +110,7 @@ def cargar_datos():
     df["aportes"]  = np.round(np.clip(3500 - 20*est + np.random.normal(0, 200, n), 500, 7000), 1)
     df["embalses"] = np.round(np.clip(65   - 0.3*est + np.random.normal(0, 5,   n), 10,  100),  1)
     df["demanda"]  = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0, 3, n), 1)
-    oni_serie = cargar_oni()
-    df["oni"] = df["fecha"].map(oni_serie)
-    df["oni"] = df["oni"].fillna(0.0)  # días sin dato → neutro
+    df["oni"] = 0.0
     return df
 
 @st.cache_data(ttl=3600)
