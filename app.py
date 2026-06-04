@@ -238,12 +238,17 @@ def entrenar_y_pronosticar(horizonte_dias: int):
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
+    # DESPUÉS
     for col in regresores:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r  = hist_rec.mean()
         std_r = max(hist_rec.std() * 0.3, 0.01)
         proy  = np.random.normal(mu_r, std_r, horizonte_dias)
-        futuro[col] = np.concatenate([dp[col].values, proy])
+        # Alinear por fecha para evitar desfaces por duplicados
+        vals_hist = dp.set_index("ds")[col].reindex(futuro["ds"]).values
+        vals_hist_clean = np.where(np.isnan(vals_hist), mu_r, vals_hist)
+        n_futuro = len(futuro) - len(dp)
+        futuro[col] = np.concatenate([vals_hist_clean[:len(dp)], proy[:n_futuro]])
 
     forecast = m.predict(futuro)
     return df, dp, forecast, m, fuentes, regresores
