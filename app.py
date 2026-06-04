@@ -2,12 +2,18 @@
 Dashboard — Pronóstico Precio de Bolsa Colombia
 Ejecutar: streamlit run app.py
 
-Archivos Excel en la misma carpeta del repo:
-  - PrecioBolsa2026.xlsx  : hoja 'PrecioBolsa'       | Fecha + horas 0..23 ($/kWh)
-  - Aportes2026.xlsx      : hoja 'Aportes'            | Fecha + horas 0..23 (Wh → GWh)
-  - Embalses2026.xlsx     : hoja 'Reservas_Diario_SIN'| Fecha | Volumen Útil Diario %
-  - Demanda2026.xlsx      : hoja 'Demanda'            | Fecha + horas 0..23 (Wh → GWh)
-  - ONI.xlsx              : hoja 'ONI'                | fecha | oni
+Archivos base (obligatorio + opcionales fijos):
+  - PrecioBolsa2026.xlsx  : hoja 'PrecioBolsa'        | Fecha + horas 0..23 ($/kWh)
+  - Aportes2026.xlsx      : hoja 'Aportes'             | Fecha + horas 0..23 (Wh)
+  - Embalses2026.xlsx     : hoja 'Reservas_Diario_SIN' | Fecha | Volumen Útil Diario %
+  - Demanda2026.xlsx      : hoja 'Demanda'             | Fecha + horas 0..23 (Wh)
+  - ONI.xlsx              : hoja 'ONI'                 | fecha | oni
+
+Variables extra (cualquier cantidad):
+  Sube un Excel con exactamente 2 columnas: fecha | valor
+  El nombre del archivo define el nombre de la variable.
+  Ejemplos: WTI.xlsx, USDCOP.xlsx, Gas.xlsx, Carbon.xlsx
+  El código los detecta automáticamente — no hay que tocar nada más.
 """
 
 import os
@@ -21,6 +27,23 @@ from datetime import date
 warnings.filterwarnings("ignore")
 
 DIR = os.path.dirname(__file__)
+
+# ─────────────────────────────────────────────
+# VARIABLES EXTRA — CONFIGURACIÓN
+# ─────────────────────────────────────────────
+# Lista de archivos extra que el modelo intentará cargar.
+# Formato de cada archivo: 2 columnas → fecha | valor (diario)
+# Para agregar una nueva variable: simplemente súbela al repo
+# con el nombre correcto y agrégala aquí.
+# prior_scale: qué tanto confía el modelo en esa variable (0.1=poco, 1.0=mucho)
+
+VARIABLES_EXTRA = {
+    # nombre_col    : (archivo,          prior_scale, unidad_display)
+    "wti"          : ("WTI.xlsx",        0.4,         "USD/barril"),
+    "usdcop"       : ("USDCOP.xlsx",     0.4,         "COP/USD"),
+    "gas"          : ("Gas.xlsx",        0.4,         "USD/MMBTU"),
+    "carbon"       : ("Carbon.xlsx",     0.3,         "USD/ton"),
+}
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN UI
@@ -54,6 +77,7 @@ st.markdown("""
     .fbadge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; margin-left:6px; }
     .f-real { background:#1b2d1b; color:#3fb950; border:1px solid #3fb950; }
     .f-sim  { background:#1c2128; color:#7d8590; border:1px solid #30363d; }
+    .f-extra { background:#1b1f2d; color:#58a6ff; border:1px solid #58a6ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -62,17 +86,15 @@ COLORS = {
     "muted":"#7d8590","blue":"#58a6ff","orange":"#f0883e","green":"#3fb950","red":"#f85149",
 }
 
+PALETA_EXTRA = ["#f0883e","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72"]
+
 
 # ─────────────────────────────────────────────
 # LECTORES DE EXCEL
 # ─────────────────────────────────────────────
 
 def leer_horario_xm(archivo, hoja, nombre_col, factor=1.0):
-    """
-    Lee Excel formato XM: Fecha | 0 | 1 | ... | 23
-    Promedia las 24 horas. Aplica factor de escala (ej: 1e-6 para Wh→GWh).
-    Elimina filas donde Fecha no es una fecha válida (totales, etc).
-    """
+    """Excel formato XM: Fecha | 0..23. Promedia 24h, aplica factor."""
     ruta = os.path.join(DIR, archivo)
     if not os.path.exists(ruta):
         return None, False
@@ -80,11 +102,9 @@ def leer_horario_xm(archivo, hoja, nombre_col, factor=1.0):
         df = pd.read_excel(ruta, sheet_name=hoja, header=0)
         df = df.rename(columns={df.columns[0]: "fecha"})
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-        df = df.dropna(subset=["fecha"])  # elimina filas de totales
+        df = df.dropna(subset=["fecha"])
         cols_h = [c for c in df.columns if str(c).strip() in [str(h) for h in range(24)]]
-        df[nombre_col] = pd.to_numeric(
-            df[cols_h].apply(pd.to_numeric, errors="coerce").mean(axis=1)
-        ) * factor
+        df[nombre_col] = df[cols_h].apply(pd.to_numeric, errors="coerce").mean(axis=1) * factor
         df = df[["fecha", nombre_col]].dropna()
         return df.sort_values("fecha").reset_index(drop=True), True
     except Exception as e:
@@ -93,9 +113,7 @@ def leer_horario_xm(archivo, hoja, nombre_col, factor=1.0):
 
 
 def leer_diario(archivo, hoja, col_fecha, col_valor, nombre_col):
-    """
-    Lee Excel con formato diario simple: col_fecha | col_valor.
-    """
+    """Excel con formato diario simple: col_fecha | col_valor."""
     ruta = os.path.join(DIR, archivo)
     if not os.path.exists(ruta):
         return None, False
@@ -111,10 +129,37 @@ def leer_diario(archivo, hoja, col_fecha, col_valor, nombre_col):
         return None, False
 
 
+def leer_variable_extra(archivo, nombre_col):
+    """
+    Lee un Excel de variable extra con exactamente 2 columnas: fecha | valor.
+    Acepta cualquier nombre de columna — usa posición.
+    Interpola gaps y hace ffill/bfill.
+    """
+    ruta = os.path.join(DIR, archivo)
+    if not os.path.exists(ruta):
+        return None, False
+    try:
+        df = pd.read_excel(ruta, header=0)
+        # Tomar las dos primeras columnas útiles
+        df = df.iloc[:, :2].copy()
+        df.columns = ["fecha", nombre_col]
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df[nombre_col] = pd.to_numeric(df[nombre_col], errors="coerce")
+        df = df.dropna(subset=["fecha"])
+        df = df.sort_values("fecha").reset_index(drop=True)
+        # Expandir a diario completo con interpolación
+        fechas = pd.date_range(df["fecha"].min(), df["fecha"].max(), freq="D")
+        df_d = pd.DataFrame({"fecha": fechas})
+        df_d = df_d.merge(df, on="fecha", how="left")
+        df_d[nombre_col] = df_d[nombre_col].interpolate().ffill().bfill()
+        return df_d, True
+    except Exception as e:
+        st.sidebar.warning(f"⚠ {archivo}: {e}")
+        return None, False
+
+
 def leer_oni(archivo, hoja):
-    """
-    Lee ONI mensual (fecha | oni) y lo expande a serie diaria por ffill.
-    """
+    """ONI mensual → serie diaria por ffill."""
     ruta = os.path.join(DIR, archivo)
     if not os.path.exists(ruta):
         return None, False
@@ -124,7 +169,6 @@ def leer_oni(archivo, hoja):
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
         df["oni"]   = pd.to_numeric(df["oni"], errors="coerce")
         df = df[["fecha", "oni"]].dropna().sort_values("fecha")
-        # Expandir a diario
         fechas = pd.date_range(df["fecha"].min(), date.today(), freq="D")
         df_d = pd.DataFrame({"fecha": fechas})
         df_d = df_d.merge(df, on="fecha", how="left")
@@ -142,8 +186,9 @@ def leer_oni(archivo, hoja):
 @st.cache_data(ttl=3600)
 def cargar_datos():
     fuentes = {}
+    vars_extra_cargadas = {}  # {nombre_col: unidad}
 
-    # ── Precio ($/kWh) ──
+    # ── Precio (obligatorio) ──
     df_precio, ok = leer_horario_xm("PrecioBolsa2026.xlsx", "PrecioBolsa", "precio", factor=1.0)
     if not ok or df_precio is None:
         st.error("❌ No se encontró PrecioBolsa2026.xlsx — archivo obligatorio.")
@@ -156,7 +201,7 @@ def cargar_datos():
     np.random.seed(42)
     est = 30 * np.sin(2 * np.pi * t / 365 - np.pi / 2)
 
-    # ── Aportes (Wh → GWh, factor 1e-6) ──
+    # ── Aportes ──
     df_ap, ok_ap = leer_horario_xm("Aportes2026.xlsx", "Aportes", "aportes", factor=1e-6)
     if ok_ap and df_ap is not None:
         df = df.merge(df_ap, on="fecha", how="left")
@@ -166,7 +211,7 @@ def cargar_datos():
         df["aportes"] = np.round(np.clip(3500 - 20*est + np.random.normal(0,200,n), 500, 7000), 1)
         fuentes["aportes"] = "simulado"
 
-    # ── Embalses (% diario, 2 columnas) ──
+    # ── Embalses ──
     df_em, ok_em = leer_diario(
         "Embalses2026.xlsx", "Reservas_Diario_SIN",
         "Fecha", "Volumen Útil Diario %", "embalses"
@@ -179,7 +224,7 @@ def cargar_datos():
         df["embalses"] = np.round(np.clip(65 - 0.3*est + np.random.normal(0,5,n), 10, 100), 1)
         fuentes["embalses"] = "simulado"
 
-    # ── Demanda (Wh → GWh, factor 1e-6) ──
+    # ── Demanda ──
     df_dm, ok_dm = leer_horario_xm("Demanda2026.xlsx", "Demanda", "demanda", factor=1e-6)
     if ok_dm and df_dm is not None:
         df = df.merge(df_dm, on="fecha", how="left")
@@ -189,7 +234,7 @@ def cargar_datos():
         df["demanda"] = np.round(165 + 0.005*t + 5*np.sin(2*np.pi*t/365) + np.random.normal(0,3,n), 1)
         fuentes["demanda"] = "simulado"
 
-    # ── ONI (mensual → diario) ──
+    # ── ONI ──
     oni_serie, ok_oni = leer_oni("ONI.xlsx", "ONI")
     if ok_oni and oni_serie is not None:
         df["oni"] = df["fecha"].map(oni_serie).ffill().bfill().fillna(0.0)
@@ -198,25 +243,47 @@ def cargar_datos():
         df["oni"] = 0.0
         fuentes["oni"] = "simulado"
 
-    # Eliminar fechas duplicadas (promedio si hay más de un valor por día)
+    # ── Variables extra (automático) ──
+    for nombre_col, (archivo, prior_scale, unidad) in VARIABLES_EXTRA.items():
+        df_extra, ok_extra = leer_variable_extra(archivo, nombre_col)
+        if ok_extra and df_extra is not None and len(df_extra) > 0:
+            df = df.merge(df_extra, on="fecha", how="left")
+            df[nombre_col] = df[nombre_col].interpolate().ffill().bfill()
+            fuentes[nombre_col] = "real"
+            vars_extra_cargadas[nombre_col] = unidad
+        # Si no existe el archivo, simplemente no se agrega — no se simula
+
+    # Deduplicar fechas
     df = df.groupby("fecha", as_index=False).mean(numeric_only=True)
     df = df.sort_values("fecha").reset_index(drop=True)
-    return df, fuentes
+    return df, fuentes, vars_extra_cargadas
 
 
 @st.cache_data(ttl=3600)
 def entrenar_y_pronosticar(horizonte_dias: int):
-    df, fuentes = cargar_datos()
+    df, fuentes, vars_extra_cargadas = cargar_datos()
 
     dp = df.rename(columns={"fecha": "ds", "precio": "y"}).copy()
 
-    # Normalizar regresores — manejar std=0
-    prior_scales = {
+    # Columnas base + extra disponibles
+    cols_base  = ["aportes", "embalses", "demanda", "oni"]
+    cols_extra = list(vars_extra_cargadas.keys())
+    todas_cols = cols_base + [c for c in cols_extra if c in dp.columns]
+
+    prior_scales_base = {
         "aportes_norm": 0.5, "embalses_norm": 0.4,
         "demanda_norm": 0.3, "oni_norm": 0.6,
     }
+    prior_scales_extra = {
+        f"{c}_norm": VARIABLES_EXTRA[c][1]
+        for c in cols_extra if c in VARIABLES_EXTRA
+    }
+    prior_scales = {**prior_scales_base, **prior_scales_extra}
+
     regresores = []
-    for col in ["aportes", "embalses", "demanda", "oni"]:
+    for col in todas_cols:
+        if col not in dp.columns:
+            continue
         mu  = dp[col].mean()
         std = dp[col].std()
         if std == 0 or np.isnan(std): std = 1.0
@@ -234,35 +301,27 @@ def entrenar_y_pronosticar(horizonte_dias: int):
         seasonality_mode="multiplicative",
     )
     for reg in regresores:
-        m.add_regressor(reg, prior_scale=prior_scales.get(reg, 0.5))
+        m.add_regressor(reg, prior_scale=prior_scales.get(reg, 0.4))
 
     m.fit(dp)
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
 
-    # Mapa fecha→valor para alinear sin depender de longitud
     for col in regresores:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r  = hist_rec.mean()
         std_r = max(hist_rec.std() * 0.3, 0.01)
         proy  = np.random.normal(mu_r, std_r, horizonte_dias)
-
-        # Alinear histórico por fecha (evita errores por duplicados o gaps)
-        mapa = dp.drop_duplicates("ds").set_index("ds")[col]
-        vals = futuro["ds"].map(mapa).values.astype(float)
-
-        # Rellenar NaN del histórico con la media
-        vals = np.where(np.isnan(vals), mu_r, vals)
-
-        # Sobrescribir fechas futuras con proyección
+        mapa  = dp.drop_duplicates("ds").set_index("ds")[col]
+        vals  = futuro["ds"].map(mapa).values.astype(float)
+        vals  = np.where(np.isnan(vals), mu_r, vals)
         mask_futuro = futuro["ds"] > ultima
         vals[mask_futuro.values] = proy[:mask_futuro.sum()]
-
         futuro[col] = vals
 
     forecast = m.predict(futuro)
-    return df, dp, forecast, m, fuentes, regresores
+    return df, dp, forecast, m, fuentes, regresores, vars_extra_cargadas
 
 
 # ─────────────────────────────────────────────
@@ -279,15 +338,23 @@ with st.sidebar:
     mostrar_tabla   = st.checkbox("Mostrar tabla de pronóstico", value=True)
     st.markdown("---")
     st.markdown("""
-**Archivos cargados:**
-- `PrecioBolsa2026.xlsx`
+**Archivos base:**
+- `PrecioBolsa2026.xlsx` ✅
 - `Aportes2026.xlsx`
 - `Embalses2026.xlsx`
 - `Demanda2026.xlsx`
 - `ONI.xlsx`
+
+**Variables extra (opcionales):**
+- `WTI.xlsx` → precio petróleo
+- `USDCOP.xlsx` → tasa de cambio
+- `Gas.xlsx` → precio gas
+- `Carbon.xlsx` → precio carbón
+
+*Formato: 2 columnas → fecha | valor*
     """)
     st.markdown("---")
-    st.markdown("*Prophet + Streamlit · XM + NOAA*")
+    st.markdown("*Prophet · XM + NOAA*")
 
 
 # ─────────────────────────────────────────────
@@ -299,7 +366,7 @@ st.markdown("""
     ⚡ Precio de Bolsa · Colombia
 </h1>
 <p style='color:#7d8590;font-size:14px;margin-top:4px;'>
-    Pronóstico · Prophet · Datos reales XM + NOAA 2026
+    Pronóstico · Prophet · XM + NOAA 2026
 </p>
 """, unsafe_allow_html=True)
 st.markdown("---")
@@ -310,7 +377,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 
 with st.spinner("Cargando datos y entrenando modelo..."):
-    df, dp, forecast, modelo, fuentes, regresores = entrenar_y_pronosticar(horizonte)
+    df, dp, forecast, modelo, fuentes, regresores, vars_extra_cargadas = entrenar_y_pronosticar(horizonte)
 
 corte        = dp["ds"].max()
 futuro_fc    = forecast[forecast["ds"] > corte].copy()
@@ -329,18 +396,34 @@ alerta_nivel = "ALTO" if precio_fc_d1 > umbral_alto else ("BAJO" if precio_fc_d1
 # ─────────────────────────────────────────────
 
 def badge(var):
-    cls = "f-real" if fuentes.get(var) == "real" else "f-sim"
-    txt = "✓ real" if fuentes.get(var) == "real" else "≈ sim"
-    return f'<span class="fbadge {cls}">{txt}</span>'
+    estado = fuentes.get(var, "no")
+    if estado == "real":
+        return f'<span class="fbadge f-real">✓ real</span>'
+    elif estado == "simulado":
+        return f'<span class="fbadge f-sim">≈ sim</span>'
+    else:
+        return f'<span class="fbadge f-sim">— n/d</span>'
 
-st.markdown(
+badges_base = (
     f"Precio {badge('precio')} &nbsp;"
     f"Aportes {badge('aportes')} &nbsp;"
     f"Embalses {badge('embalses')} &nbsp;"
     f"Demanda {badge('demanda')} &nbsp;"
-    f"ONI {badge('oni')}",
+    f"ONI {badge('oni')}"
+)
+badges_extra = " &nbsp;".join(
+    f"{col.upper()} {badge(col)}" for col in vars_extra_cargadas
+)
+st.markdown(
+    badges_base + (" &nbsp;&nbsp;|&nbsp;&nbsp; " + badges_extra if badges_extra else ""),
     unsafe_allow_html=True
 )
+if vars_extra_cargadas:
+    st.markdown(
+        f'<span style="color:#58a6ff;font-size:12px;">⚡ Variables extra activas en el modelo: '
+        f'{", ".join(v.upper() for v in vars_extra_cargadas)}</span>',
+        unsafe_allow_html=True
+    )
 st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -357,10 +440,10 @@ def kpi(label, value, delta=None, delta_label=""):
     return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div>{dh}</div>'
 
 c1, c2, c3, c4 = st.columns(4)
-with c1: st.markdown(kpi("Precio actual",               f"${precio_hoy:.0f}"),                                   unsafe_allow_html=True)
+with c1: st.markdown(kpi("Precio actual",               f"${precio_hoy:.0f}"),                                    unsafe_allow_html=True)
 with c2: st.markdown(kpi("Pronóstico mañana",           f"${precio_fc_d1:.0f}", delta=delta_pct, delta_label="vs hoy"), unsafe_allow_html=True)
-with c3: st.markdown(kpi(f"Pronóstico día {horizonte}", f"${precio_fc_fn:.0f}"),                                  unsafe_allow_html=True)
-with c4: st.markdown(kpi("Nivel embalses",              f"{df['embalses'].iloc[-1]:.1f}%"),                       unsafe_allow_html=True)
+with c3: st.markdown(kpi(f"Pronóstico día {horizonte}", f"${precio_fc_fn:.0f}"),                                   unsafe_allow_html=True)
+with c4: st.markdown(kpi("Nivel embalses",              f"{df['embalses'].iloc[-1]:.1f}%"),                        unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -382,16 +465,21 @@ st.markdown("<br>", unsafe_allow_html=True)
 # TABS
 # ─────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["📈 Pronóstico", "🔍 Variables externas"])
+tabs_labels = ["📈 Pronóstico", "🔍 Variables base"]
+if vars_extra_cargadas:
+    tabs_labels.append("📊 Variables extra")
 
-with tab1:
-    n_dias  = len(dp)
-    opciones = [x for x in [30, 60, 90, 150] if x <= n_dias] or [n_dias]
+tabs = st.tabs(tabs_labels)
+
+# ── Tab 1: Pronóstico ──
+with tabs[0]:
+    n_dias   = len(dp)
+    opciones = [x for x in [30, 60, 90, 150, 365, 730] if x <= n_dias] or [n_dias]
     dias_hist = st.select_slider(
         "Histórico a mostrar",
         options=opciones,
         value=opciones[-1],
-        format_func=lambda x: f"{x}d",
+        format_func=lambda x: f"{x//365}a" if x >= 365 else f"{x}d",
     )
     corte_hist = corte - pd.Timedelta(days=int(dias_hist))
     dh = dp[dp["ds"] >= corte_hist]
@@ -437,14 +525,15 @@ with tab1:
         height=420, margin=dict(l=0, r=0, t=30, b=0), hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"Regresores activos: {', '.join(regresores)}")
 
     if mostrar_comp:
         st.markdown("**Componentes del modelo**")
         st.pyplot(modelo.plot_components(forecast))
 
 
-with tab2:
-    col_a, col_b = st.columns(2)
+# ── Tab 2: Variables base ──
+with tabs[1]:
     df_plot = df.rename(columns={"fecha": "ds"})
 
     def mini_line(x, y, color, title, ylabel):
@@ -464,6 +553,7 @@ with tab2:
         )
         return f
 
+    col_a, col_b = st.columns(2)
     with col_a:
         st.plotly_chart(mini_line(df_plot["ds"], df_plot["aportes"], "#58a6ff",
             f"Aportes hídricos {'✓' if fuentes['aportes']=='real' else '≈'}", "GWh/día"),
@@ -471,12 +561,10 @@ with tab2:
         st.plotly_chart(mini_line(df_plot["ds"], df_plot["demanda"], "#bc8cff",
             f"Demanda nacional {'✓' if fuentes['demanda']=='real' else '≈'}", "GWh/día"),
             use_container_width=True)
-
     with col_b:
         st.plotly_chart(mini_line(df_plot["ds"], df_plot["embalses"], "#3fb950",
             f"Nivel embalses {'✓' if fuentes['embalses']=='real' else '≈'}", "%"),
             use_container_width=True)
-
         if fuentes["oni"] == "real":
             fig_oni = go.Figure()
             fig_oni.add_trace(go.Bar(
@@ -496,12 +584,31 @@ with tab2:
         else:
             st.markdown(
                 '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
-                'padding:20px;text-align:center;color:#7d8590;font-size:13px;">'
+                'padding:20px;text-align:center;color:#7d8590;font-size:13px;height:250px;'
+                'display:flex;align-items:center;justify-content:center;">'
                 '📡 ONI/ENSO · Sube ONI.xlsx para activar</div>',
                 unsafe_allow_html=True
             )
 
-    st.caption(f"Regresores activos: {', '.join(regresores)}")
+
+# ── Tab 3: Variables extra (solo si hay alguna cargada) ──
+if vars_extra_cargadas and len(tabs) > 2:
+    with tabs[2]:
+        st.markdown("Variables externas activas como regresores del modelo.")
+        items = list(vars_extra_cargadas.items())
+        # Grid de 2 columnas
+        for i in range(0, len(items), 2):
+            cols = st.columns(2)
+            for j, (nombre_col, unidad) in enumerate(items[i:i+2]):
+                if nombre_col not in df_plot.columns:
+                    continue
+                color = PALETA_EXTRA[i + j % len(PALETA_EXTRA)]
+                with cols[j]:
+                    st.plotly_chart(
+                        mini_line(df_plot["ds"], df_plot[nombre_col], color,
+                                  f"{nombre_col.upper()} ✓", unidad),
+                        use_container_width=True
+                    )
 
 
 # ─────────────────────────────────────────────
