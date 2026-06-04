@@ -198,6 +198,8 @@ def cargar_datos():
         df["oni"] = 0.0
         fuentes["oni"] = "simulado"
 
+    # Eliminar fechas duplicadas (promedio si hay más de un valor por día)
+    df = df.groupby("fecha", as_index=False).mean(numeric_only=True)
     df = df.sort_values("fecha").reset_index(drop=True)
     return df, fuentes
 
@@ -238,17 +240,26 @@ def entrenar_y_pronosticar(horizonte_dias: int):
 
     futuro = m.make_future_dataframe(periods=horizonte_dias, freq="D")
     ultima = dp["ds"].max()
-    # DESPUÉS
+
+    # Mapa fecha→valor para alinear sin depender de longitud
     for col in regresores:
         hist_rec = dp[dp["ds"] >= ultima - pd.Timedelta(days=90)][col]
         mu_r  = hist_rec.mean()
         std_r = max(hist_rec.std() * 0.3, 0.01)
         proy  = np.random.normal(mu_r, std_r, horizonte_dias)
-        # Alinear por fecha para evitar desfaces por duplicados
-        vals_hist = dp.set_index("ds")[col].reindex(futuro["ds"]).values
-        vals_hist_clean = np.where(np.isnan(vals_hist), mu_r, vals_hist)
-        n_futuro = len(futuro) - len(dp)
-        futuro[col] = np.concatenate([vals_hist_clean[:len(dp)], proy[:n_futuro]])
+
+        # Alinear histórico por fecha (evita errores por duplicados o gaps)
+        mapa = dp.drop_duplicates("ds").set_index("ds")[col]
+        vals = futuro["ds"].map(mapa).values.astype(float)
+
+        # Rellenar NaN del histórico con la media
+        vals = np.where(np.isnan(vals), mu_r, vals)
+
+        # Sobrescribir fechas futuras con proyección
+        mask_futuro = futuro["ds"] > ultima
+        vals[mask_futuro.values] = proy[:mask_futuro.sum()]
+
+        futuro[col] = vals
 
     forecast = m.predict(futuro)
     return df, dp, forecast, m, fuentes, regresores
