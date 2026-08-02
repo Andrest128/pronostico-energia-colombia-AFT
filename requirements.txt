@@ -6,3 +6,4 @@ prophet
 openpyxl
 pydataxm
 requests
+pulp
