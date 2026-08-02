@@ -82,7 +82,7 @@ def backtest_multi_dia(
 if __name__ == "__main__":
     from hourly_shape import cargar_precio_horario_crudo
 
-    df_h = cargar_precio_horario_crudo("../data/PrecioBolsa2026.xlsx")
+    df_h = cargar_precio_horario_crudo("../PrecioBolsa2026.xlsx")
 
     battery = BatteryConfig(
         capacity_mwh=4.0, power_mw=1.0, round_trip_efficiency=0.90,
