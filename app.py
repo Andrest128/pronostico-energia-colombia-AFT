@@ -17,16 +17,36 @@ Variables extra (cualquier cantidad):
 """
 
 import os
+import sys
 import warnings
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from prophet import Prophet
 from datetime import date
 warnings.filterwarnings("ignore")
 
 DIR = os.path.dirname(__file__)
+
+# ─────────────────────────────────────────────
+# MÓDULOS DEL OPTIMIZADOR DE BATERÍA (BESS)
+# ─────────────────────────────────────────────
+# Viven en battery_optimizer/ como scripts independientes (se pueden correr
+# sueltos vía `python3 backtest.py`, por eso usan imports simples entre ellos
+# en vez de imports relativos de paquete). Para poder importarlos aquí sin
+# tocar esos archivos, se agrega la carpeta al sys.path antes de importar.
+sys.path.insert(0, os.path.join(DIR, "battery_optimizer"))
+try:
+    from battery_model import BatteryConfig
+    from hourly_shape import cargar_precio_horario_crudo, calcular_forma_horaria, resumen_spread_intradia
+    from hourly_forecast import construir_pronostico_horario
+    from optimizer import optimizar_despacho, resumen_resultado
+    BATERIA_DISPONIBLE = True
+except ImportError as _e:
+    BATERIA_DISPONIBLE = False
+    _bateria_import_error = str(_e)
 
 # ─────────────────────────────────────────────
 # VARIABLES EXTRA — CONFIGURACIÓN
@@ -465,7 +485,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # TABS
 # ─────────────────────────────────────────────
 
-tabs_labels = ["📈 Pronóstico", "🔍 Variables base"]
+tabs_labels = ["📈 Pronóstico", "🔍 Variables base", "🔋 Optimizador Batería"]
 if vars_extra_cargadas:
     tabs_labels.append("📊 Variables extra")
 
@@ -591,9 +611,163 @@ with tabs[1]:
             )
 
 
-# ── Tab 3: Variables extra (solo si hay alguna cargada) ──
-if vars_extra_cargadas and len(tabs) > 2:
-    with tabs[2]:
+# ── Tab 3: Optimizador de batería (BESS) ──
+with tabs[2]:
+    if not BATERIA_DISPONIBLE:
+        st.error(
+            "❌ No se pudo cargar el módulo del optimizador de batería. "
+            f"Detalle: {_bateria_import_error}. Verifica que la carpeta "
+            "`battery_optimizer/` esté en la raíz del repo, junto a app.py."
+        )
+    else:
+        st.markdown(
+            "Optimiza cuándo cargar y descargar un sistema de almacenamiento "
+            "(BESS/SAEB) usando el mismo pronóstico de precio de arriba, "
+            "combinado con el patrón horario histórico real del precio de bolsa."
+        )
+
+        # ── Configuración de la batería ──
+        st.markdown("**Parámetros de la batería**")
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            capacity_mwh = st.number_input("Capacidad (MWh)", min_value=0.1, value=4.0, step=0.5)
+            soc_init_pct = st.slider("SOC inicial (%)", 0, 100, 50) / 100
+        with bc2:
+            power_mw = st.number_input("Potencia máx. (MW)", min_value=0.1, value=1.0, step=0.1)
+            soc_min_pct = st.slider("SOC mínimo (%)", 0, 50, 10) / 100
+        with bc3:
+            eficiencia_pct = st.slider("Eficiencia ida-vuelta (%)", 70, 100, 90) / 100
+            soc_max_pct = st.slider("SOC máximo (%)", 50, 100, 95) / 100
+
+        dias_optimizar = st.slider(
+            "Días a optimizar (desde mañana)", 1, min(int(horizonte), 30),
+            min(7, int(horizonte)),
+            help="Usa el pronóstico de precio ya calculado arriba. Limitado a 30 días "
+                 "para mantener el tablero ágil — cada día se optimiza por separado "
+                 "encadenando el nivel de carga (rolling horizon)."
+        )
+
+        try:
+            battery = BatteryConfig(
+                capacity_mwh=capacity_mwh, power_mw=power_mw,
+                round_trip_efficiency=eficiencia_pct,
+                soc_min_pct=soc_min_pct, soc_max_pct=soc_max_pct,
+                soc_init_pct=soc_init_pct, degradation_cost_per_mwh=3.0,
+            )
+        except ValueError as e:
+            st.error(f"⚠ Configuración de batería inválida: {e}")
+            st.stop()
+
+        # ── Forma horaria histórica + pronóstico horario ──
+        @st.cache_data(ttl=3600)
+        def _cargar_forma_horaria():
+            df_h = cargar_precio_horario_crudo(os.path.join(DIR, "PrecioBolsa2026.xlsx"))
+            forma = calcular_forma_horaria(df_h, dias_recientes=180, por_tipo_dia=True)
+            spread_info = resumen_spread_intradia(df_h, dias_recientes=90)
+            return forma, spread_info
+
+        forma, spread_info = _cargar_forma_horaria()
+
+        st.caption(
+            f"Spread intradía histórico (últimos {spread_info['dias_analizados']} días): "
+            f"${spread_info['spread_promedio']:.0f}/kWh en promedio "
+            f"({spread_info['spread_pct_del_promedio']:.0f}% del precio promedio del día) "
+            "— esa es la señal que el optimizador aprovecha."
+        )
+
+        fecha_inicio_opt = corte + pd.Timedelta(days=1)
+        pronostico_horario = construir_pronostico_horario(
+            forecast, forma, fecha_inicio=fecha_inicio_opt, horizonte_dias=dias_optimizar
+        )
+
+        if pronostico_horario.empty:
+            st.warning("No hay suficientes días de pronóstico para optimizar. Aumenta el horizonte en la barra lateral.")
+        else:
+            # ── Optimización rolling, día por día ──
+            soc_actual = battery.soc_init_mwh
+            planes = []
+            for fecha_dia in pronostico_horario["fecha"].unique():
+                precios_dia = pronostico_horario.loc[
+                    pronostico_horario["fecha"] == fecha_dia, "precio_yhat"
+                ].reset_index(drop=True)
+                resultado_dia = optimizar_despacho(precios_dia, battery, soc_inicial_mwh=soc_actual)
+                resultado_dia["fecha"] = fecha_dia
+                resultado_dia["datetime"] = pronostico_horario.loc[
+                    pronostico_horario["fecha"] == fecha_dia, "datetime"
+                ].values
+                planes.append(resultado_dia)
+                soc_actual = resultado_dia["soc_mwh"].iloc[-1]
+
+            plan = pd.concat(planes, ignore_index=True)
+            resumen = resumen_resultado(plan)
+
+            # ── KPIs ──
+            k1, k2, k3, k4 = st.columns(4)
+            with k1: st.markdown(kpi("Ingreso proyectado", f"${resumen['ingreso_total']:,.0f}"), unsafe_allow_html=True)
+            with k2: st.markdown(kpi("Energía cargada", f"{resumen['energia_cargada_mwh']:.1f} MWh"), unsafe_allow_html=True)
+            with k3: st.markdown(kpi("Energía descargada", f"{resumen['energia_descargada_mwh']:.1f} MWh"), unsafe_allow_html=True)
+            with k4: st.markdown(kpi("Precio compra/venta prom.", f"${resumen['precio_promedio_compra']:.0f} / ${resumen['precio_promedio_venta']:.0f}"), unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── Gráfico: precio + carga/descarga + SOC ──
+            fig_bat = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                vertical_spacing=0.06,
+                specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+            )
+            fig_bat.add_trace(
+                go.Scatter(x=plan["datetime"], y=plan["precio"], mode="lines",
+                            line=dict(color=COLORS["orange"], width=2), name="Precio pronosticado ($/kWh)"),
+                row=1, col=1, secondary_y=False,
+            )
+            fig_bat.add_trace(
+                go.Bar(x=plan["datetime"], y=plan["charge_mwh"], name="Carga (MWh)",
+                        marker_color=COLORS["blue"], opacity=0.7),
+                row=1, col=1, secondary_y=True,
+            )
+            fig_bat.add_trace(
+                go.Bar(x=plan["datetime"], y=-plan["discharge_mwh"], name="Descarga (MWh)",
+                        marker_color=COLORS["red"], opacity=0.7),
+                row=1, col=1, secondary_y=True,
+            )
+            fig_bat.add_trace(
+                go.Scatter(x=plan["datetime"], y=plan["soc_pct"], mode="lines",
+                            line=dict(color=COLORS["green"], width=1.5), fill="tozeroy",
+                            fillcolor="rgba(63,185,80,0.12)", name="SOC (%)"),
+                row=2, col=1,
+            )
+            fig_bat.update_layout(
+                paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
+                font=dict(family="DM Sans", color=COLORS["text"]),
+                legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"),
+                barmode="relative", height=520, margin=dict(l=0, r=0, t=30, b=0),
+                hovermode="x unified",
+            )
+            fig_bat.update_yaxes(title_text="$/kWh", gridcolor=COLORS["border"], row=1, col=1, secondary_y=False)
+            fig_bat.update_yaxes(title_text="MWh", gridcolor=COLORS["border"], row=1, col=1, secondary_y=True, zeroline=True)
+            fig_bat.update_yaxes(title_text="SOC %", gridcolor=COLORS["border"], row=2, col=1, range=[0, 100])
+            fig_bat.update_xaxes(gridcolor=COLORS["border"], row=2, col=1)
+            st.plotly_chart(fig_bat, use_container_width=True)
+
+            st.caption(
+                "⚠ El precio horario se reconstruye multiplicando el pronóstico diario "
+                "por un patrón horario histórico promedio (no es un pronóstico hora-por-hora "
+                "propiamente dicho). El plan debe recalcularse a diario con datos actualizados, "
+                "no ejecutarse de un tirón sin revisión."
+            )
+
+            with st.expander("📋 Ver plan de despacho detallado"):
+                tabla_plan = plan[["datetime", "precio", "charge_mwh", "discharge_mwh", "soc_pct", "ingreso_hora", "tipo_accion"]].copy()
+                tabla_plan.columns = ["Fecha/Hora", "Precio ($/kWh)", "Carga (MWh)", "Descarga (MWh)", "SOC (%)", "Ingreso ($)", "Acción"]
+                st.dataframe(tabla_plan, use_container_width=True, hide_index=True)
+                csv_plan = tabla_plan.to_csv(index=False).encode("utf-8")
+                st.download_button("⬇ Descargar plan CSV", data=csv_plan,
+                    file_name=f"plan_bateria_{date.today()}.csv", mime="text/csv")
+
+
+# ── Tab 4: Variables extra (solo si hay alguna cargada) ──
+if vars_extra_cargadas and len(tabs) > 3:
+    with tabs[3]:
         st.markdown("Variables externas activas como regresores del modelo.")
         items = list(vars_extra_cargadas.items())
         # Grid de 2 columnas
